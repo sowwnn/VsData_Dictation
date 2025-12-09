@@ -1,0 +1,59 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+._.DS_Store
+._*
+Thumbs.db
+
+# Temporary files
+temp_data/
+*.tmp
+*.log
+*.lock
+
+# Model files (uncomment if you don't want to commit large model files)
+# *.pth
+# *.pt
+# *.ckpt
+# *.h5
+# *.pkl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets
+secret/
+credentials.json
+*.key
+*.pem
