@@ -1,0 +1,11 @@
+google-cloud-speech
+sounddevice
+PyAudio
+numpy
+pandas
+plotly
+wave
+# API client (lightweight)
+requests
+# Image processing (for extracting slice images)
+Pillow
