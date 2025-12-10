@@ -1,4 +1,5 @@
 google-cloud-speech
+openai-whisper
 sounddevice
 PyAudio
 numpy

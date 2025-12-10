@@ -151,14 +151,16 @@ class TrackerLogic(ScriptedLoadableModuleLogic):
             
         # Initialize the audio transcriber with the right settings
         if self.enableTranscription:
-            if not self.credentialsPath:
-                slicer.util.errorDisplay("Credentials file not set. Cannot start transcription.")
-                return False
+            # Use credentials_path if file exists, otherwise let it fallback to environment variables
+            cred_path = self.credentialsPath if (self.credentialsPath and os.path.exists(self.credentialsPath)) else None
             self.audioTranscriber = AudioTranscriber(
-                credentials_path=self.credentialsPath,
+                credentials_path=cred_path,
                 language_code=self.languageCode,
                 model=self.transcriptionModel
             )
+            # Check if client was initialized successfully
+            if not self.audioTranscriber.client:
+                logging.warning("Google Cloud Speech client not initialized. Transcription may fail. Ensure GOOGLE_APPLICATION_CREDENTIALS is set or provide valid credentials file.")
 
         # Clear old data
         for view in self.data:
