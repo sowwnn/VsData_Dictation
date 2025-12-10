@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+python-multipart
+# Data processing
+pandas
+numpy
+nibabel
+# LLM dependencies
+google-generativeai
+python-dotenv
+# SAM Medical dependencies
+torch
+torchvision
+# Image processing
+Pillow
+opencv-python
+pynrrd
+# Segment Anything (install separately: pip install git+https://github.com/facebookresearch/segment-anything.git)
+# MedSAM (install separately, see: https://github.com/bowang-lab/MedSAM)
+# Grounding DINO (install separately: pip install git+https://github.com/IDEA-Research/GroundingDINO.git)
+TotalSegmentator
