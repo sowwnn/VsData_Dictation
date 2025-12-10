@@ -38,11 +38,11 @@ temp_data/
 *.lock
 
 # Model files (uncomment if you don't want to commit large model files)
-# *.pth
-# *.pt
-# *.ckpt
-# *.h5
-# *.pkl
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.pkl
 
 # Testing
 .pytest_cache/
