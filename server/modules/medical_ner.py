@@ -1,6 +1,8 @@
 import os
 import logging
 import json
+import time
+import re
 from typing import List, Dict, Optional
 
 def _format_transcript_for_prompt(segments: List[Dict]) -> str:
@@ -22,17 +24,21 @@ def _format_transcript_for_prompt(segments: List[Dict]) -> str:
 class MedicalNER:
     """Extract anatomical organ names from transcription text using LLM."""
     
-    def __init__(self, api_key=None, model="gemini-2.5-pro"):
+    def __init__(self, api_key=None, model="gemini-2.5-flash"):
         """Initialize Medical NER with Google Gemini.
         
         Args:
             api_key: API key for the provider (or use environment variable GOOGLE_API_KEY)
-            model: Model name (defaults to gemini-2.5-pro)
+            model: Model name (defaults to gemini-2.5-flash)
         """
         self.api_provider = "google"
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         self.model = model
         self.client = None
+        
+        # Rate limiting: track last API call time
+        self.last_api_call_time = 0
+        self.min_delay_between_calls = 1.0  # Minimum 1 second between API calls
         
         self._initialize_client()
     
@@ -164,62 +170,159 @@ Return only JSON, no additional text."""
         
         return prompt
     
-    def _call_gemini(self, prompt: str) -> Optional[Dict]:
-        """Call Google Gemini API.
+    def _parse_retry_delay(self, error_message: str) -> float:
+        """Parse retry_delay from API error message.
+        
+        Args:
+            error_message: Error message from API
+            
+        Returns:
+            float: Retry delay in seconds, or None if not found
+        """
+        # Try to extract retry_delay from error message
+        # Format: "Please retry in X.XXXXXXs" or "retry_delay { seconds: X }"
+        patterns = [
+            r"retry in ([\d.]+)s",
+            r"retry_delay.*?seconds[:\s]+(\d+)",
+            r"seconds[:\s]+(\d+)",
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, error_message, re.IGNORECASE)
+            if match:
+                try:
+                    delay = float(match.group(1))
+                    return delay
+                except ValueError:
+                    continue
+        
+        return None
+    
+    def _call_gemini(self, prompt: str, max_retries: int = 3) -> Optional[Dict]:
+        """Call Google Gemini API with retry logic and rate limiting.
         
         Args:
             prompt: Prompt text
+            max_retries: Maximum number of retry attempts (default: 3)
             
         Returns:
             dict: Response from API
         """
-        try:
-            # Generate content with JSON response format
-            # Note: response_mime_type may not be supported in all models
+        # Rate limiting: ensure minimum delay between API calls
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call_time
+        if time_since_last_call < self.min_delay_between_calls:
+            sleep_time = self.min_delay_between_calls - time_since_last_call
+            logging.debug(f"Rate limiting: waiting {sleep_time:.2f}s before API call")
+            time.sleep(sleep_time)
+        
+        for attempt in range(max_retries + 1):
             try:
-                response = self.client.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0.3,
-                        "response_mime_type": "application/json",
-                    }
-                )
+                # Update last API call time
+                self.last_api_call_time = time.time()
+                
+                # Generate content with JSON response format
+                # Note: response_mime_type may not be supported in all models
+                try:
+                    response = self.client.generate_content(
+                        prompt,
+                        generation_config={
+                            "temperature": 0.3,
+                            "response_mime_type": "application/json",
+                        }
+                    )
+                except Exception as e:
+                    error_str = str(e)
+                    
+                    # Check if it's a quota/rate limit error (429)
+                    if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                        # Parse retry_delay from error message
+                        retry_delay = self._parse_retry_delay(error_str)
+                        
+                        if retry_delay is None:
+                            # Use exponential backoff: 2^attempt seconds
+                            retry_delay = min(2 ** attempt, 60)  # Cap at 60 seconds
+                        else:
+                            # Add small buffer to retry_delay from API
+                            retry_delay = retry_delay + 1.0
+                        
+                        if attempt < max_retries:
+                            logging.warning(f"API quota/rate limit exceeded (attempt {attempt + 1}/{max_retries + 1}). "
+                                          f"Retrying in {retry_delay:.2f}s...")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            logging.error(f"API quota/rate limit exceeded after {max_retries + 1} attempts. Giving up.")
+                            return None
+                    
+                    # Fallback if response_mime_type is not supported (non-quota error)
+                    logging.warning(f"JSON mode not supported, using standard generation: {e}")
+                    response = self.client.generate_content(
+                        prompt,
+                        generation_config={
+                            "temperature": 0.3,
+                        }
+                    )
+                
+                content = response.text
+                
+                # Parse JSON response
+                try:
+                    result = json.loads(content)
+                    return result
+                except json.JSONDecodeError as e:
+                    logging.warning(f"Error parsing Gemini JSON response: {e}, trying to extract JSON...")
+                    # Try to extract JSON from response if it's wrapped in text
+                    start = content.find('{')
+                    end = content.rfind('}') + 1
+                    if start >= 0 and end > start:
+                        json_str = content[start:end]
+                        try:
+                            result = json.loads(json_str)
+                            return result
+                        except json.JSONDecodeError:
+                            logging.error(f"Could not parse extracted JSON: {json_str[:200]}")
+                            return None
+                    else:
+                        logging.warning(f"No JSON found in Gemini response. Content: {content[:200]}")
+                        return None
+                
             except Exception as e:
-                # Fallback if response_mime_type is not supported
-                logging.warning(f"JSON mode not supported, using standard generation: {e}")
-                response = self.client.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0.3,
-                    }
-                )
-            
-            content = response.text
-            
-            # Parse JSON response
-            try:
-                result = json.loads(content)
-                return result
-            except json.JSONDecodeError as e:
-                logging.warning(f"Error parsing Gemini JSON response: {e}, trying to extract JSON...")
-                # Try to extract JSON from response if it's wrapped in text
-                start = content.find('{')
-                end = content.rfind('}') + 1
-                if start >= 0 and end > start:
-                    json_str = content[start:end]
-                    try:
-                        result = json.loads(json_str)
-                        return result
-                    except json.JSONDecodeError:
-                        logging.error(f"Could not parse extracted JSON: {json_str[:200]}")
+                error_str = str(e)
+                
+                # Check if it's a quota/rate limit error (429)
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    # Parse retry_delay from error message
+                    retry_delay = self._parse_retry_delay(error_str)
+                    
+                    if retry_delay is None:
+                        # Use exponential backoff: 2^attempt seconds
+                        retry_delay = min(2 ** attempt, 60)  # Cap at 60 seconds
+                    else:
+                        # Add small buffer to retry_delay from API
+                        retry_delay = retry_delay + 1.0
+                    
+                    if attempt < max_retries:
+                        logging.warning(f"API quota/rate limit exceeded (attempt {attempt + 1}/{max_retries + 1}). "
+                                      f"Retrying in {retry_delay:.2f}s...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logging.error(f"API quota/rate limit exceeded after {max_retries + 1} attempts. Giving up.")
                         return None
                 else:
-                    logging.warning(f"No JSON found in Gemini response. Content: {content[:200]}")
-                    return None
-                
-        except Exception as e:
-            logging.error(f"Error calling Google Gemini API: {e}")
-            return None
+                    # Non-quota error: log and return None
+                    logging.error(f"Error calling Google Gemini API (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                    if attempt < max_retries:
+                        # Exponential backoff for other errors too
+                        retry_delay = min(2 ** attempt, 10)  # Cap at 10 seconds for non-quota errors
+                        logging.info(f"Retrying in {retry_delay:.2f}s...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        return None
+        
+        return None
     
     def match_organs_to_classes_batch(self, organ_names: List[str], available_classes: Dict[int, str]) -> Dict[str, tuple]:
         """
